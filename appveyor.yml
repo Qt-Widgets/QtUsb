@@ -1,0 +1,86 @@
+branches:
+  only:
+    - master
+    - appveyor
+
+matrix:
+  fast_finish: false
+
+environment:
+  matrix:
+  - arch: x64
+    qt: 5.13
+    cc: VS2017
+    mode: release
+    QTDIR: C:\Qt\%qt%\msvc2017_64
+    APPVEYOR_BUILD_WORKER_IMAGE: Visual Studio 2017
+
+  - arch: x86
+    qt: 5.13
+    cc: VS2017
+    mode: release
+    QTDIR: C:\Qt\%qt%\msvc2017
+    APPVEYOR_BUILD_WORKER_IMAGE: Visual Studio 2017
+
+init:
+  - set vcarch=%arch%
+  - set usbarch=%arch%
+  - if "%arch%" == "x64" set vcarch=amd64
+  - if "%arch%" == "x86" set usbarch=Win32
+  - if %cc%==VS2017 (
+      call "C:\Program Files (x86)\Microsoft Visual Studio\2017\Community\VC\Auxiliary\Build\vcvarsall.bat" %vcarch%
+    ) else if not %cc%==MinGW (
+      call "C:\Program Files (x86)\Microsoft Visual Studio %toolchain_version%.0\VC\vcvarsall.bat" %vcarch%
+    )
+  - set PATH=%QTDIR%\bin;C:\Qt\Tools\QtCreator\bin;%PATH%
+  - if %cc%==MinGW set PATH=C:\Qt\Tools\mingw%toolchain_version%_32\bin;%PATH%
+  - echo PATH=%PATH%
+
+install:
+  - cd %APPVEYOR_BUILD_FOLDER%
+  - git submodule update --init --recursive
+  - cd libusb
+  - msbuild msvc\libusb_static_2017.vcxproj /p:Configuration=Release /logger:"C:\Program Files\AppVeyor\BuildAgent\Appveyor.MSBuildLogger.dll"
+  - msbuild msvc\libusb_static_2017.vcxproj /p:Configuration=Debug /logger:"C:\Program Files\AppVeyor\BuildAgent\Appveyor.MSBuildLogger.dll"
+  - cp -v %usbarch%/Release/lib/libusb-1.0.lib %APPVEYOR_BUILD_FOLDER%/libusb-1.0.lib
+  - cp -v %usbarch%/Debug/lib/libusb-1.0.lib %APPVEYOR_BUILD_FOLDER%/libusb-1.0d.lib
+
+build_script:
+  - cd %APPVEYOR_BUILD_FOLDER%
+  - mkdir build
+  - cd build
+  - qmake "INCLUDEPATH += %APPVEYOR_BUILD_FOLDER%\libusb" "LIBS_PRIVATE += -L%APPVEYOR_BUILD_FOLDER%" ..
+  - jom INSTALL_ROOT=\projects\install install docs install_docs
+  - jom sub-tests
+
+after_build:
+  - cd %APPVEYOR_BUILD_FOLDER%
+  - cd build
+  - if %APPVEYOR_REPO_TAG%==true (
+      7z a %APPVEYOR_REPO_TAG_NAME%-qt%qt%-usb-msvc-%arch%.7z C:\projects\install\*
+    ) else (
+      7z a %APPVEYOR_REPO_COMMIT%-qt%qt%-usb-msvc-%arch%.7z C:\projects\install\*
+    )
+  - cd tests
+  - nmake /I check TESTARGS="-o xunit.xml,xunitxml"
+
+artifacts:
+  - path: build\*.7z
+    name: QtUsb install files
+
+deploy:
+  - provider: GitHub
+    auth_token:
+      secure: FUMVTjWuerUmKlLiPtjpxjmizC+wsDanxGBFWF/T6sicn7ctP/Aleh9+hZKKskXJ
+    artifact: QtUsb install files
+    force_update: true
+    on:
+      branch: master
+      APPVEYOR_REPO_TAG: true
+
+test: off
+
+on_success:
+  - ps: |
+      $wc = New-Object 'System.Net.WebClient'
+      Get-ChildItem -Recurse -Filter "xunit.xml" | ForEach-Object { Write-Host $wc.UploadFile("https://ci.appveyor.com/api/testresults/junit/$($env:APPVEYOR_JOB_ID)", $_.FullName) }
